@@ -21,8 +21,12 @@ import (
 	"context"
 	"strings"
 
-	v1 "k8s.io/api/core/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/remotecommand"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,8 +37,9 @@ import (
 )
 
 const (
-	podNamespace = "dist-exec"
-	podLabel     = "dist-exec-pod"
+	suffix        = "-daemonset"
+	labelKey      = "dist-exec"
+	containerName = "dist-exec-environment"
 )
 
 // DistExecReconciler reconciles a DistExec object
@@ -59,22 +64,50 @@ type DistExecReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.12.1/pkg/reconcile
 func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var distExec execv1.DistExec
+	if err := r.Get(ctx, req.NamespacedName, &distExec); err != nil {
+		logger.Error(err, "DistExec name: resource not found", "name", req.NamespacedName)
+		return ctrl.Result{}, err
+	}
+
+	var daemonSet *appsv1.DaemonSet
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      distExec.Name + suffix,
+		Namespace: distExec.Namespace,
+	}, daemonSet)
+
+	// If there is no corresponding DaemonSet, it means that it is a new custom resource.
+	// We need to create the command execution environment.
+	if err != nil && errors.IsNotFound(err) {
+		logger.Info("Creating new DaemonSet for name", req.NamespacedName)
+
+		daemonSet = r.createDaemon(distExec.Name+suffix, distExec.Namespace)
+
+		err = r.Create(ctx, daemonSet)
+		if err != nil {
+			logger.Error(err, "Fail to create DaemonSet")
+			return ctrl.Result{}, err
+		}
+		// TODO: Is the Pod available immediately after the DaemonSet is created?
+	} else if err != nil {
+		logger.Error(err, "Fail to find DaemonSet")
+		return ctrl.Result{}, err
+	}
 
 	return ctrl.Result{}, nil
 }
 
 // Use RESTClient to build a request and run a command in the Pod
-func (r *DistExecReconciler) execInPod(name, command string) (string, string, error) {
+func (r *DistExecReconciler) execInPod(name, namespace, command string) (string, string, error) {
 	req := r.RESTClient.Post().
 		Resource("pods").
 		Name(name).
-		Namespace(podNamespace).
+		Namespace(namespace).
 		SubResource("exec").
-		Param("container", podLabel).
-		VersionedParams(&v1.PodExecOptions{
+		Param("container", containerName).
+		VersionedParams(&corev1.PodExecOptions{
 			Command: strings.Split(command, " "),
 			Stdin:   false,
 			Stdout:  true,
@@ -97,6 +130,39 @@ func (r *DistExecReconciler) execInPod(name, command string) (string, string, er
 	}
 
 	return stdout.String(), stderr.String(), nil
+}
+
+// DaemonSet ensures that there is a Pod on each Node to execute commands.
+// So, we use DaemonSet to create the command execution environment.
+func (r *DistExecReconciler) createDaemon(name, namespace string) *appsv1.DaemonSet {
+	return &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespace,
+		},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: map[string]string{
+					labelKey: name,
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						labelKey: name,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  containerName,
+							Image: "busybox",
+						},
+					},
+				},
+			},
+		},
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
