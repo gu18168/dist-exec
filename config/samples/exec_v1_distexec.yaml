@@ -1,0 +1,6 @@
+apiVersion: exec.yuhong.test/v1
+kind: DistExec
+metadata:
+  name: distexec-sample
+spec:
+  # TODO(user): Add fields here

@@ -1,0 +1,24 @@
+# permissions for end users to edit distexecs.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: distexec-editor-role
+rules:
+- apiGroups:
+  - exec.yuhong.test
+  resources:
+  - distexecs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - exec.yuhong.test
+  resources:
+  - distexecs/status
+  verbs:
+  - get

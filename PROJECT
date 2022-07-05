@@ -1,0 +1,16 @@
+domain: yuhong.test
+layout:
+- go.kubebuilder.io/v3
+projectName: dist-exec
+repo: github.com/gu18168/dist-exe
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: yuhong.test
+  group: exec
+  kind: DistExec
+  path: github.com/gu18168/dist-exe/api/v1
+  version: v1
+version: "3"
