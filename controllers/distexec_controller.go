@@ -19,35 +19,24 @@ package controllers
 import (
 	"bytes"
 	"context"
+	"os"
+	"os/exec"
 	"strings"
 
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/remotecommand"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/go-logr/logr"
 	execv1 "github.com/gu18168/dist-exe/api/v1"
-)
-
-const (
-	suffix        = "-daemonset"
-	labelKey      = "dist-exec"
-	containerName = "dist-exec-environment"
 )
 
 // DistExecReconciler reconciles a DistExec object
 type DistExecReconciler struct {
 	client.Client
-	RESTClient rest.Interface
-	RESTConfig *rest.Config
-	Scheme     *runtime.Scheme
+	Scheme *runtime.Scheme
 }
 
 //+kubebuilder:rbac:groups=exec.yuhong.test,resources=distexecs,verbs=get;list;watch;create;update;patch;delete
@@ -66,65 +55,89 @@ type DistExecReconciler struct {
 func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
-	var distExec execv1.DistExec
-	if err := r.Get(ctx, req.NamespacedName, &distExec); err != nil {
-		logger.Error(err, "DistExec name: resource not found", "name", req.NamespacedName)
+	// The Controller gets the executing Node name from the environment variable.
+	// If the environment variable does not exist, node name is often the same as the hostname.
+	nodeName := os.Getenv("MY_NODE_NAME")
+	if nodeName == "" {
+		nodeName, _ = os.Hostname()
+	}
+
+	distExec, err := r.getDistExec(ctx, req, logger)
+	if distExec == nil || err != nil {
 		return ctrl.Result{}, err
 	}
 
-	var daemonSet *appsv1.DaemonSet
-	err := r.Get(ctx, types.NamespacedName{
-		Name:      distExec.Name + suffix,
-		Namespace: distExec.Namespace,
-	}, daemonSet)
+	// Execute the command in the current Node
+	command := strings.Split(distExec.Spec.Command, " ")
+	execStdout, execStderr, err := r.execInNode(command)
+	if err != nil {
+		logger.Error(err, "Fail to execute in node",
+			"command", distExec.Spec.Command, "node", nodeName)
+		return ctrl.Result{}, err
+	}
 
-	// If there is no corresponding DaemonSet, it means that it is a new custom resource.
-	// We need to create the command execution environment.
-	if err != nil && errors.IsNotFound(err) {
-		logger.Info("Creating new DaemonSet for name", req.NamespacedName)
+	result := execStdout
+	if execStderr != "" {
+		result = execStderr
+	}
 
-		daemonSet = r.createDaemon(distExec.Name+suffix, distExec.Namespace)
+	for {
+		targetStatus := distExec.Status.DeepCopy().Results
+		if targetStatus == nil {
+			targetStatus = make(map[string]string)
+		}
 
-		err = r.Create(ctx, daemonSet)
-		if err != nil {
-			logger.Error(err, "Fail to create DaemonSet")
+		// Update DistExec's status if necessary
+		needUpdate := r.newStatus(targetStatus, nodeName, result)
+		if !needUpdate {
+			logger.Info("No need to update")
+			break
+		}
+
+		logger.Info("Start to update", "status", targetStatus)
+		distExec.Status.Results = targetStatus
+		err := r.Status().Update(ctx, distExec)
+		if err == nil {
+			logger.Info("Update done")
+			break
+		} else if !errors.IsResourceExpired(err) {
+			logger.Error(err, "Fail to update DistExec name", "name", req.NamespacedName)
 			return ctrl.Result{}, err
 		}
-		// TODO: Is the Pod available immediately after the DaemonSet is created?
-	} else if err != nil {
-		logger.Error(err, "Fail to find DaemonSet")
-		return ctrl.Result{}, err
+
+		// Multiple Controllers may start to update at the same time.
+		// Kubernetes ensures concurrency security with CAS (metadata.resourceVersion).
+		logger.Info("Try to update again")
+		distExec, err = r.getDistExec(ctx, req, logger)
+		if distExec == nil || err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
 	return ctrl.Result{}, nil
 }
 
-// Use RESTClient to build a request and run a command in the Pod
-func (r *DistExecReconciler) execInPod(name, namespace, command string) (string, string, error) {
-	req := r.RESTClient.Post().
-		Resource("pods").
-		Name(name).
-		Namespace(namespace).
-		SubResource("exec").
-		Param("container", containerName).
-		VersionedParams(&corev1.PodExecOptions{
-			Command: strings.Split(command, " "),
-			Stdin:   false,
-			Stdout:  true,
-			Stderr:  true,
-		}, runtime.NewParameterCodec(r.Scheme))
-
-	var stdout, stderr bytes.Buffer
-	exec, err := remotecommand.NewSPDYExecutor(r.RESTConfig, "POST", req.URL())
-	if err != nil {
-		return "", "", err
+func (r *DistExecReconciler) getDistExec(ctx context.Context, req ctrl.Request, logger logr.Logger) (*execv1.DistExec, error) {
+	var distExec execv1.DistExec
+	if err := r.Get(ctx, req.NamespacedName, &distExec); err != nil && errors.IsNotFound(err) {
+		logger.Info("DistExec has been deleted")
+		return nil, nil
+	} else if err != nil {
+		logger.Error(err, "Fail to find DistExec", "name", req.NamespacedName)
+		return nil, err
 	}
 
-	err = exec.Stream(remotecommand.StreamOptions{
-		Stdin:  nil,
-		Stdout: &stdout,
-		Stderr: &stderr,
-	})
+	return &distExec, nil
+}
+
+// Since the Controller is running in its own Pod, the command is executed directly.
+func (r *DistExecReconciler) execInNode(command []string) (string, string, error) {
+	cmd := exec.Command(command[0], command[1:]...)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	err := cmd.Run()
 	if err != nil {
 		return "", "", err
 	}
@@ -132,37 +145,15 @@ func (r *DistExecReconciler) execInPod(name, namespace, command string) (string,
 	return stdout.String(), stderr.String(), nil
 }
 
-// DaemonSet ensures that there is a Pod on each Node to execute commands.
-// So, we use DaemonSet to create the command execution environment.
-func (r *DistExecReconciler) createDaemon(name, namespace string) *appsv1.DaemonSet {
-	return &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: appsv1.DaemonSetSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{
-					labelKey: name,
-				},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						labelKey: name,
-					},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  containerName,
-							Image: "busybox",
-						},
-					},
-				},
-			},
-		},
+// Generate a new status after the execution and check the necessity of the update.
+func (r *DistExecReconciler) newStatus(status map[string]string, key, value string) bool {
+	needUpdate := false
+	if oldValue, ok := status[key]; !ok || value != oldValue {
+		status[key] = value
+		needUpdate = true
 	}
+
+	return needUpdate
 }
 
 // SetupWithManager sets up the controller with the Manager.

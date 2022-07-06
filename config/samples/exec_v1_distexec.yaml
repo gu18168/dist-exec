@@ -3,4 +3,4 @@ kind: DistExec
 metadata:
   name: distexec-sample
 spec:
-  # TODO(user): Add fields here
+  command: ls
