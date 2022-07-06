@@ -33,6 +33,9 @@ import (
 	execv1 "github.com/gu18168/dist-exe/api/v1"
 )
 
+// Cache the command that have been executed for each DistExec
+var cache = make(map[string]string)
+
 // DistExecReconciler reconciles a DistExec object
 type DistExecReconciler struct {
 	client.Client
@@ -69,6 +72,13 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	logger.Info("Start to reconcile", "version", distExec.ResourceVersion)
 
+	// Reconcile can be triggered by an update of Status.
+	// In this case, there is no need to re-execute the command
+	if execCommand, ok := cache[distExec.ObjectMeta.Name]; ok && execCommand == distExec.Spec.Command {
+		logger.Info("No need to execute", "version", distExec.ResourceVersion)
+		return ctrl.Result{}, nil
+	}
+
 	// Execute the command in the current Node
 	command := strings.Split(distExec.Spec.Command, " ")
 	execStdout, execStderr, err := r.execInNode(command)
@@ -77,6 +87,8 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			"command", distExec.Spec.Command, "node", nodeName)
 		return ctrl.Result{}, err
 	}
+
+	cache[distExec.ObjectMeta.Name] = distExec.Spec.Command
 
 	result := execStdout
 	if execStderr != "" {
@@ -160,6 +172,7 @@ func (r *DistExecReconciler) newStatus(status map[string]string, key, value stri
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DistExecReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// TODO: Assist in deleting the corresponding result when a Node exits
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&execv1.DistExec{}).
 		Complete(r)
