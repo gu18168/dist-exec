@@ -67,6 +67,8 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
+	logger.Info("Start to reconcile", "version", distExec.ResourceVersion)
+
 	// Execute the command in the current Node
 	command := strings.Split(distExec.Spec.Command, " ")
 	execStdout, execStderr, err := r.execInNode(command)
@@ -90,17 +92,17 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		// Update DistExec's status if necessary
 		needUpdate := r.newStatus(targetStatus, nodeName, result)
 		if !needUpdate {
-			logger.Info("No need to update")
+			logger.Info("No need to update", "version", distExec.ResourceVersion)
 			break
 		}
 
-		logger.Info("Start to update", "status", targetStatus)
+		logger.Info("Start to update", "status", targetStatus, "version", distExec.ResourceVersion)
 		distExec.Status.Results = targetStatus
 		err := r.Status().Update(ctx, distExec)
 		if err == nil {
 			logger.Info("Update done")
 			break
-		} else if !errors.IsResourceExpired(err) {
+		} else if !errors.IsConflict(err) {
 			logger.Error(err, "Fail to update DistExec name", "name", req.NamespacedName)
 			return ctrl.Result{}, err
 		}
