@@ -23,11 +23,17 @@ import (
 	"os/exec"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	"github.com/go-logr/logr"
 	execv1 "github.com/gu18168/dist-exe/api/v1"
@@ -65,7 +71,7 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		nodeName, _ = os.Hostname()
 	}
 
-	distExec, err := r.getDistExec(ctx, req, logger)
+	distExec, err := r.getDistExec(ctx, req.NamespacedName, logger)
 	if distExec == nil || err != nil {
 		return ctrl.Result{}, err
 	}
@@ -95,49 +101,32 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		result = execStderr
 	}
 
-	for {
-		targetStatus := distExec.Status.DeepCopy().Results
-		if targetStatus == nil {
-			targetStatus = make(map[string]string)
-		}
+	err = r.updateStatus(ctx, logger, distExec, req.NamespacedName,
+		func(distExec *execv1.DistExec) (map[string]string, bool) {
+			needUpdate := false
+			targetStatus := distExec.Status.DeepCopy().Results
+			if targetStatus == nil {
+				targetStatus = make(map[string]string)
+			}
 
-		// Update DistExec's status if necessary
-		needUpdate := r.newStatus(targetStatus, nodeName, result)
-		if !needUpdate {
-			logger.Info("No need to update", "version", distExec.ResourceVersion)
-			break
-		}
+			if oldValue, ok := targetStatus[nodeName]; !ok || result != oldValue {
+				targetStatus[nodeName] = result
+				needUpdate = true
+			}
 
-		logger.Info("Start to update", "status", targetStatus, "version", distExec.ResourceVersion)
-		distExec.Status.Results = targetStatus
-		err := r.Status().Update(ctx, distExec)
-		if err == nil {
-			logger.Info("Update done")
-			break
-		} else if !errors.IsConflict(err) {
-			logger.Error(err, "Fail to update DistExec name", "name", req.NamespacedName)
-			return ctrl.Result{}, err
-		}
+			return targetStatus, needUpdate
+		})
 
-		// Multiple Controllers may start to update at the same time.
-		// Kubernetes ensures concurrency security with CAS (metadata.resourceVersion).
-		logger.Info("Try to update again")
-		distExec, err = r.getDistExec(ctx, req, logger)
-		if distExec == nil || err != nil {
-			return ctrl.Result{}, err
-		}
-	}
-
-	return ctrl.Result{}, nil
+	return ctrl.Result{}, err
 }
 
-func (r *DistExecReconciler) getDistExec(ctx context.Context, req ctrl.Request, logger logr.Logger) (*execv1.DistExec, error) {
+func (r *DistExecReconciler) getDistExec(ctx context.Context, name types.NamespacedName, logger logr.Logger) (*execv1.DistExec, error) {
 	var distExec execv1.DistExec
-	if err := r.Get(ctx, req.NamespacedName, &distExec); err != nil && errors.IsNotFound(err) {
+	if err := r.Get(ctx, name, &distExec); err != nil && errors.IsNotFound(err) {
 		logger.Info("DistExec has been deleted")
 		return nil, nil
 	} else if err != nil {
-		logger.Error(err, "Fail to find DistExec", "name", req.NamespacedName)
+		logger.Error(err, "Fail to find DistExec", "name", name)
 		return nil, err
 	}
 
@@ -159,21 +148,84 @@ func (r *DistExecReconciler) execInNode(command []string) (string, string, error
 	return stdout.String(), stderr.String(), nil
 }
 
-// Generate a new status after the execution and check the necessity of the update.
-func (r *DistExecReconciler) newStatus(status map[string]string, key, value string) bool {
-	needUpdate := false
-	if oldValue, ok := status[key]; !ok || value != oldValue {
-		status[key] = value
-		needUpdate = true
+// Due to competing modifications of multiple controllers,
+// it is necessary to ensure that the update is successful.
+func (r *DistExecReconciler) updateStatus(ctx context.Context, logger logr.Logger,
+	distExec *execv1.DistExec, namespacedName types.NamespacedName,
+	newStatus func(*execv1.DistExec) (map[string]string, bool)) error {
+	for {
+		// Update DistExec's status if necessary
+		targetStatus, needUpdate := newStatus(distExec)
+		if !needUpdate {
+			logger.Info("No need to update", "version", distExec.ResourceVersion)
+			break
+		}
+
+		logger.Info("Start to update", "status", targetStatus, "version", distExec.ResourceVersion)
+		distExec.Status.Results = targetStatus
+		err := r.Status().Update(ctx, distExec)
+		if err == nil {
+			logger.Info("Update done")
+			break
+		} else if !errors.IsConflict(err) {
+			logger.Error(err, "Fail to update DistExec name", "name", namespacedName)
+			return err
+		}
+
+		// Multiple Controllers may start to update at the same time.
+		// Kubernetes ensures concurrency security with CAS (metadata.resourceVersion).
+		logger.Info("Try to update again")
+		distExec, err = r.getDistExec(ctx, namespacedName, logger)
+		if distExec == nil || err != nil {
+			return err
+		}
 	}
 
-	return needUpdate
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *DistExecReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// TODO: Assist in deleting the corresponding result when a Node exits
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&execv1.DistExec{}).
+		Watches(&source.Kind{Type: &corev1.Node{}}, handler.Funcs{DeleteFunc: r.nodeDeleteHandler}).
 		Complete(r)
+}
+
+// If a node exits, the Controller on the other node helps maintain the status.
+func (r *DistExecReconciler) nodeDeleteHandler(e event.DeleteEvent, q workqueue.RateLimitingInterface) {
+	ctx := context.Background()
+	logger := log.FromContext(ctx)
+
+	logger.Info("Start to node delete handler")
+
+	var distExecList execv1.DistExecList
+	if err := r.List(ctx, &distExecList); err != nil && errors.IsNotFound(err) {
+		logger.Info("No DistExec is found")
+		return
+	} else if err != nil {
+		logger.Error(err, "Fail to find DistExec")
+		return
+	}
+
+	nodeName := e.Object.GetName()
+	statusUpdater := func(distExec *execv1.DistExec) (map[string]string, bool) {
+		if _, ok := distExec.Status.Results[nodeName]; !ok {
+			return nil, false
+		}
+
+		targetStatus := distExec.Status.DeepCopy().Results
+		delete(targetStatus, nodeName)
+		return targetStatus, true
+	}
+
+	for _, obj := range distExecList.Items {
+		distExec := &obj
+		namespacedName := types.NamespacedName{
+			Namespace: distExec.GetNamespace(),
+			Name:      distExec.GetName(),
+		}
+
+		_ = r.updateStatus(ctx, logger, distExec, namespacedName, statusUpdater)
+	}
 }
