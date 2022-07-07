@@ -6,6 +6,13 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - list
+  - watch
+- apiGroups:
   - exec.yuhong.test
   resources:
   - distexecs

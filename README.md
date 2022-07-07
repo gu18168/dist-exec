@@ -35,19 +35,24 @@ You’ll need a Kubernetes cluster to run against. You can use [KIND](https://si
 **Note:** Your controller will automatically use the current context in your kubeconfig file (i.e. whatever cluster `kubectl cluster-info` shows).
 
 ### Running on the cluster
-1. Install Instances of Custom Resources:
+
+1. Install CRD and run Operator (Based on helm)
 
 ```sh
-kubectl apply -f config/samples/
+make deploy
 ```
 
-TODO: use helm to depoy Operator.
-
-### Uninstall CRDs
-To delete the CRDs from the cluster:
+2. Install Instances of Custom Resources:
 
 ```sh
-make uninstall
+kubectl apply -f config/samples/exec_v1_distexec.yaml
+```
+
+### Uninstall 
+To delete the CRDs and Operator from the cluster:
+
+```sh
+make undeploy 
 ```
 
 ### How it works
