@@ -51,6 +51,7 @@ type DistExecReconciler struct {
 //+kubebuilder:rbac:groups=exec.yuhong.test,resources=distexecs,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=exec.yuhong.test,resources=distexecs/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=exec.yuhong.test,resources=distexecs/finalizers,verbs=update
+//+kubebuilder:rbac:groups=core,resources=nodes,verbs=list;watch
 
 func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -70,7 +71,7 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	logger.Info("Start to reconcile", "version", distExec.ResourceVersion)
 
 	// Reconcile can be triggered by an update of Status. 
-	// And `cache`` records the last command executed in this Node.
+	// And `cache` records the last command executed in this Node.
 	// If the command remains unchanged, there is no need to re-execute the command.
 	if execCommand, ok := cache[distExec.ObjectMeta.Name]; ok && execCommand == distExec.Spec.Command {
 		logger.Info("No need to execute", "version", distExec.ResourceVersion)
