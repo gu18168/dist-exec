@@ -1,8 +1,34 @@
 # dist-exec
-// TODO(user): Add simple overview of use/purpose
+
+An Operator ensures that when a `distexec` custom resource is created, all Nodes will execute the command specified by the `distexec`. The result of the execution will be recorded in the status of the `distexec` resource.
+
+The Operator makes it easy to implement distributed command execution on a per-Node basis.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+The Operator is deployed by DaemonSet and ensures that the command execution environment is available on every Node.
+
+Operator listens to the `distexec.exec.yuhong.test` custom resource. When the resource is created, the Operators execute the commands specified by the resource in their respective nodes. The result of the execution is stored in the status of the resource.
+
+For example, the `distexec-sample` resource wants to execute the `ls` command on each node. The corresponding YAML configuration is as follows:
+
+```yaml
+apiVersion: exec.yuhong.test/v1
+kind: DistExec
+metadata:
+  name: distexec-sample
+spec:
+  command: ls
+```
+
+Suppose our Kubernetes cluster has two nodes, `node1` and `node2`. When `distexec-sample` is created, Operator will execute commands in both nodes. The final status of the `distexec-sample` resource looks like this:
+
+```yaml
+Status:
+  results:
+    node1: a.txt
+    node2: b.txt
+```
 
 ## Getting Started
 You’ll need a Kubernetes cluster to run against. You can use [KIND](https://sigs.k8s.io/kind) to get a local cluster for testing, or run against a remote cluster.
@@ -15,17 +41,7 @@ You’ll need a Kubernetes cluster to run against. You can use [KIND](https://si
 kubectl apply -f config/samples/
 ```
 
-2. Build and push your image to the location specified by `IMG`:
-	
-```sh
-make docker-build docker-push IMG=<some-registry>/dist-exec:tag
-```
-	
-3. Deploy the controller to the cluster with the image specified by `IMG`:
-
-```sh
-make deploy IMG=<some-registry>/dist-exec:tag
-```
+TODO: use helm to depoy Operator.
 
 ### Uninstall CRDs
 To delete the CRDs from the cluster:
@@ -34,47 +50,11 @@ To delete the CRDs from the cluster:
 make uninstall
 ```
 
-### Undeploy controller
-UnDeploy the controller to the cluster:
-
-```sh
-make undeploy
-```
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
 ### How it works
 This project aims to follow the Kubernetes [Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
 
 It uses [Controllers](https://kubernetes.io/docs/concepts/architecture/controller/) 
 which provides a reconcile function responsible for synchronizing resources untile the desired state is reached on the cluster 
-
-### Test It Out
-1. Install the CRDs into the cluster:
-
-```sh
-make install
-```
-
-2. Run your controller (this will run in the foreground, so switch to a new terminal if you want to leave it running):
-
-```sh
-make run
-```
-
-**NOTE:** You can also run this in one step by running: `make install run`
-
-### Modifying the API definitions
-If you are editing the API definitions, generate the manifests such as CRs or CRDs using:
-
-```sh
-make manifests
-```
-
-**NOTE:** Run `make --help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
 
 ## License
 
