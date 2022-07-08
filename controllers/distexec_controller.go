@@ -19,7 +19,6 @@ package controllers
 import (
 	"bytes"
 	"context"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -45,7 +44,8 @@ var cache = make(map[string]string)
 // DistExecReconciler reconciles a DistExec object
 type DistExecReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	NodeName string
 }
 
 //+kubebuilder:rbac:groups=exec.yuhong.test,resources=distexecs,verbs=get;list;watch;create;update;patch;delete
@@ -55,13 +55,6 @@ type DistExecReconciler struct {
 
 func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-
-	// The Controller gets the executing Node name from the environment variable.
-	// If the environment variable does not exist, node name is often the same as the hostname.
-	nodeName := os.Getenv("NODE_NAME")
-	if nodeName == "" {
-		nodeName, _ = os.Hostname()
-	}
 
 	distExec, err := r.getDistExec(ctx, req.NamespacedName, logger)
 	if distExec == nil {
@@ -87,7 +80,7 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	execStdout, execStderr, err := r.execInNode(command)
 	if err != nil {
 		logger.Error(err, "Fail to execute in node",
-			"command", distExec.Spec.Command, "node", nodeName)
+			"command", distExec.Spec.Command, "node", r.NodeName)
 		return ctrl.Result{}, err
 	}
 
@@ -106,8 +99,8 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				targetStatus = make(map[string]string)
 			}
 
-			if oldValue, ok := targetStatus[nodeName]; !ok || result != oldValue {
-				targetStatus[nodeName] = result
+			if oldValue, ok := targetStatus[r.NodeName]; !ok || result != oldValue {
+				targetStatus[r.NodeName] = result
 				needUpdate = true
 			}
 
@@ -137,8 +130,7 @@ func (r *DistExecReconciler) execInNode(command []string) (string, string, error
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 
-	err := cmd.Run()
-	if err != nil {
+	if err := cmd.Run(); err != nil {
 		return "", "", err
 	}
 
@@ -160,8 +152,7 @@ func (r *DistExecReconciler) updateStatus(ctx context.Context, logger logr.Logge
 
 		logger.Info("Start to update", "status", targetStatus, "version", distExec.ResourceVersion)
 		distExec.Status.Results = targetStatus
-		err := r.Status().Update(ctx, distExec)
-		if err == nil {
+		if err := r.Status().Update(ctx, distExec); err == nil {
 			logger.Info("Update done")
 			break
 		} else if !errors.IsConflict(err) {
@@ -172,8 +163,8 @@ func (r *DistExecReconciler) updateStatus(ctx context.Context, logger logr.Logge
 		// Multiple Controllers may start to update at the same time.
 		// Kubernetes ensures concurrency security with CAS (metadata.resourceVersion).
 		logger.Info("Try to update again")
-		distExec, err = r.getDistExec(ctx, namespacedName, logger)
-		if distExec == nil || err != nil {
+		distExec, err := r.getDistExec(ctx, namespacedName, logger)
+		if distExec == nil {
 			return err
 		}
 	}
@@ -216,13 +207,12 @@ func (r *DistExecReconciler) nodeDeleteHandler(e event.DeleteEvent, q workqueue.
 		return targetStatus, true
 	}
 
-	for _, obj := range distExecList.Items {
-		distExec := &obj
+	for _, distExec := range distExecList.Items {
 		namespacedName := types.NamespacedName{
 			Namespace: distExec.GetNamespace(),
 			Name:      distExec.GetName(),
 		}
 
-		_ = r.updateStatus(ctx, logger, distExec, namespacedName, statusUpdater)
+		_ = r.updateStatus(ctx, logger, &distExec, namespacedName, statusUpdater)
 	}
 }

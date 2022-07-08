@@ -89,9 +89,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The Controller gets the executing Node name from the environment variable.
+	// If the environment variable does not exist, node name is often the same as the hostname.
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		nodeName, _ = os.Hostname()
+	}
+
 	if err = (&controllers.DistExecReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		NodeName: nodeName,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "DistExec")
 		os.Exit(1)
