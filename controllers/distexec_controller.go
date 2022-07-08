@@ -58,7 +58,7 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	// The Controller gets the executing Node name from the environment variable.
 	// If the environment variable does not exist, node name is often the same as the hostname.
-	nodeName := os.Getenv("MY_NODE_NAME")
+	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		nodeName, _ = os.Hostname()
 	}
