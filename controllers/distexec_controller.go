@@ -64,16 +64,20 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 
 	distExec, err := r.getDistExec(ctx, req.NamespacedName, logger)
-	if distExec == nil || err != nil {
+	if distExec == nil {
+		// If DistExec is deleted, the cache also needs to be deleted.
+		if err == nil {
+			delete(cache, req.String())
+		}
 		return ctrl.Result{}, err
 	}
 
 	logger.Info("Start to reconcile", "version", distExec.ResourceVersion)
 
-	// Reconcile can be triggered by an update of Status. 
+	// Reconcile can be triggered by an update of Status.
 	// And `cache` records the last command executed in this Node.
 	// If the command remains unchanged, there is no need to re-execute the command.
-	if execCommand, ok := cache[distExec.ObjectMeta.Name]; ok && execCommand == distExec.Spec.Command {
+	if execCommand, ok := cache[req.String()]; ok && execCommand == distExec.Spec.Command {
 		logger.Info("No need to execute", "version", distExec.ResourceVersion)
 		return ctrl.Result{}, nil
 	}
@@ -87,7 +91,7 @@ func (r *DistExecReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return ctrl.Result{}, err
 	}
 
-	cache[distExec.ObjectMeta.Name] = distExec.Spec.Command
+	cache[req.String()] = distExec.Spec.Command
 
 	result := execStdout
 	if execStderr != "" {
