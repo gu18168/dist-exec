@@ -18,7 +18,12 @@ COPY controllers/ controllers/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o manager main.go
 
 # Use busybox images to make it easier to execute common commands
-FROM busybox
+FROM alpine:latest
+
+RUN apk add --no-cache \
+    bash \
+    curl
+
 WORKDIR /
 COPY --from=builder /workspace/manager .
 USER 65532:65532
