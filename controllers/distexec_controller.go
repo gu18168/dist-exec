@@ -141,7 +141,7 @@ func (r *DistExecReconciler) execInNode(command []string) (string, string, error
 // it is necessary to ensure that the update is successful.
 func (r *DistExecReconciler) updateStatus(ctx context.Context, logger logr.Logger,
 	distExec *execv1.DistExec, namespacedName types.NamespacedName,
-	newStatus func(*execv1.DistExec) (map[string]string, bool)) error {
+	newStatus func(*execv1.DistExec) (map[string]string, bool)) (err error) {
 	for {
 		// Update DistExec's status if necessary
 		targetStatus, needUpdate := newStatus(distExec)
@@ -163,7 +163,7 @@ func (r *DistExecReconciler) updateStatus(ctx context.Context, logger logr.Logge
 		// Multiple Controllers may start to update at the same time.
 		// Kubernetes ensures concurrency security with CAS (metadata.resourceVersion).
 		logger.Info("Try to update again")
-		distExec, err := r.getDistExec(ctx, namespacedName, logger)
+		distExec, err = r.getDistExec(ctx, namespacedName, logger)
 		if distExec == nil {
 			return err
 		}
